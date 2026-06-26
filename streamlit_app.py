@@ -5,9 +5,18 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
-import threading, time, tempfile
-import io
-from backend.processing import remove_bg, extract_contours, create_offset_contour, generate_exports
+
+# Set page config first so we can output error messages
+st.set_page_config(page_title="Outline Maker", layout="centered")
+
+try:
+    import threading, time, tempfile
+    import io
+    from backend.processing import remove_bg, extract_contours, create_offset_contour, generate_exports
+except Exception as e:
+    st.error("Failed to start the application due to an import error. Please check your dependencies.")
+    st.exception(e)
+    st.stop()
 
 # Cleanup thread to delete temporary files after 5 minutes
 def cleanup_temp_dir(lifetime_seconds: int = 300):
