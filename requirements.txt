@@ -2,7 +2,7 @@ streamlit==1.56.0
 rembg
 opencv-python-headless
 pillow
-numpy
+numpy<2.0
 shapely
 svgwrite
 svgpathtools
