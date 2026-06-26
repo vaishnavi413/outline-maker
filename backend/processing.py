@@ -183,10 +183,20 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
     
     # Need to save the transparent PNG temporarily for reportlab
     import tempfile
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-        img.save(tmp.name)
+    import os
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            img.save(tmp.name)
+            tmp_path = tmp.name
         # reportlab draws from bottom-left
-        c.drawImage(tmp.name, 0, 0, width, height, mask='auto')
+        c.drawImage(tmp_path, 0, 0, width, height, mask='auto')
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
     
     c.setStrokeColorRGB(1, 0, 0)
     c.setLineWidth(thickness)

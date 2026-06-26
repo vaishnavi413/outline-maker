@@ -1,5 +1,11 @@
+import sys
+import os
+
+# Ensure the root directory is on the path for relative imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import streamlit as st
-import threading, time, os, tempfile
+import threading, time, tempfile
 import io
 from backend.processing import remove_bg, extract_contours, create_offset_contour, generate_exports
 
