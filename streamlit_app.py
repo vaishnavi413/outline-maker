@@ -148,14 +148,35 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# Helper for instant white background thresholding (ideal for JPG sheets)
+def remove_white_bg(image_bytes: bytes, threshold: int = 240) -> bytes:
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return image_bytes
+    bgra = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+    white_mask = (img[:, :, 0] >= threshold) & (img[:, :, 1] >= threshold) & (img[:, :, 2] >= threshold)
+    bgra[white_mask, 3] = 0
+    _, buffer = cv2.imencode(".png", bgra)
+    return buffer.tobytes()
+
 # Sidebar - Controls Setup
+st.sidebar.markdown('<div class="sidebar-header">⚙️ Mode & Processing</div>', unsafe_allow_html=True)
+bg_mode = st.sidebar.radio(
+    "Background Removal Method",
+    ["White Background Threshold (Best for JPG sheets)", "AI Background Removal (rembg for complex photos)"]
+)
+separate_objects = st.sidebar.checkbox("Separate Outlines for Each Picture", True)
+clean_lines = st.sidebar.checkbox("Clean sheet guide lines & boxes", True)
+
+st.sidebar.markdown('---')
 st.sidebar.markdown('<div class="sidebar-header">🎨 Outline Controls</div>', unsafe_allow_html=True)
 offset_mm = st.sidebar.slider("White border offset (mm)", 0.0, 30.0, 5.0, step=0.5)
 thickness_px = st.sidebar.slider("Outline thickness (px)", 1, 15, 2)
 corner_type = st.sidebar.selectbox("Corner join style", ["Round", "Square", "Miter"])
 smooth = st.sidebar.checkbox("Smooth contour (organic curves)", True)
 fill_holes = st.sidebar.checkbox("Fill internal holes (solid sticker backing)", True)
-min_area = st.sidebar.slider("Filter tiny speckles / noise (min px²)", 0, 500, 50, step=10)
+min_area = st.sidebar.slider("Filter tiny speckles / noise (min px²)", 0, 2000, 300, step=50)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown('<div class="sidebar-header">🎨 Style & Colors</div>', unsafe_allow_html=True)
@@ -168,10 +189,10 @@ def hex_to_rgba(hex_str, alpha=255):
 
 st.sidebar.markdown("---")
 st.sidebar.info(
-    "💡 **Tips:**\n\n"
-    "* **Fill internal holes**: Turn ON for a solid sticker backing. Turn OFF to cut inner gaps.\n"
-    "* **Filter speckles**: Increase if stray pixels or background boxes create unwanted cut lines.\n"
-    "* **Round**: Creates smooth organic contours."
+    "💡 **Multi-Picture JPG Tips:**\n\n"
+    "* **Separate Outlines for Each Picture**: Generates an independent outline around EVERY picture on the sheet!\n"
+    "* **White Background Threshold**: Instant background removal for JPG sheets with a white background.\n"
+    "* **Clean guide lines**: Cleans pink guide lines and green registration boxes."
 )
 
 # File Uploader
@@ -183,11 +204,14 @@ uploaded = st.file_uploader(
 if uploaded:
     image_bytes = uploaded.read()
     
-    # Remove background using cached function
-    bg_removed = get_cached_bg_removed(image_bytes)
+    # Remove background using chosen method
+    if "White Background" in bg_mode:
+        bg_removed = remove_white_bg(image_bytes)
+    else:
+        bg_removed = get_cached_bg_removed(image_bytes)
     
-    # Extract contours with noise filter
-    contours, shape = extract_contours(bg_removed, min_area=float(min_area))
+    # Extract contours with noise and line filters
+    contours, shape = extract_contours(bg_removed, min_area=float(min_area), clean_lines=clean_lines)
     img_h, img_w = shape[0], shape[1]
 
     # Convert mm to pixels (300 DPI layout calculations)
@@ -196,7 +220,14 @@ if uploaded:
     join_style = join_style_map[corner_type]
 
     # Calculate offset contour path
-    offset_contour = create_offset_contour(contours, offset_px, join_style=join_style, smooth=smooth, fill_holes=fill_holes)
+    offset_contour = create_offset_contour(
+        contours, 
+        offset_px, 
+        join_style=join_style, 
+        smooth=smooth, 
+        fill_holes=fill_holes,
+        separate_objects=separate_objects
+    )
 
     # Convert hex colors to RGBA
     fill_rgba = hex_to_rgba(fill_hex, 255)
@@ -209,11 +240,11 @@ if uploaded:
     col1, col2 = st.columns(2)
 
     with col1:
-        st.subheader("🖼️ Original (Background Removed)")
+        st.subheader("🖼️ Original (Background Isolated)")
         st.image(bg_removed, use_container_width=True)
 
     with col2:
-        st.subheader("✨ Sticker Preview (With Cut Path)")
+        st.subheader("✨ Sticker Sheet Preview (Separate Outlines)")
         st.image(exports["png"], use_container_width=True)
 
     st.markdown("### 💾 Download Print-Ready Files (300 DPI)")

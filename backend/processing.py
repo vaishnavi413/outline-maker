@@ -16,41 +16,57 @@ def remove_bg(image_bytes: bytes) -> bytes:
     result = remove(image_bytes)
     return result
 
-def extract_contours(image_bytes: bytes, min_area: float = 50.0) -> tuple:
-    """Extracts base contours from an image with transparency and filters small noise artifacts."""
-    # Read image
+def extract_contours(image_bytes: bytes, min_area: float = 200.0, clean_lines: bool = True) -> tuple:
+    """
+    Extracts base contours from an image (PNG or JPG).
+    Cleans thin guide lines, registration boxes, and small noise artifacts.
+    """
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
     
     if img is None:
         raise ValueError("Invalid image file provided.")
 
-    # If no alpha channel, return empty or handle threshold
+    # Determine alpha / object mask
     if len(img.shape) < 3 or img.shape[2] != 4:
+        # Grayscale threshold for JPGs with light/white background
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) >= 3 else img
-        _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
-        alpha = thresh
+        _, alpha = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)
     else:
         alpha = img[:, :, 3]
-        _, alpha = cv2.threshold(alpha, 0, 255, cv2.THRESH_BINARY)
+        _, alpha = cv2.threshold(alpha, 10, 255, cv2.THRESH_BINARY)
+
+    # Clean thin guide lines (e.g. pink lines, registration boxes) using morphological operations
+    if clean_lines:
+        # Morphological opening removes thin lines (thickness <= 3px)
+        line_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        alpha = cv2.morphologyEx(alpha, cv2.MORPH_OPEN, line_kernel)
         
-    # Apply morphological closing and opening to clean mask
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    alpha = cv2.morphologyEx(alpha, cv2.MORPH_CLOSE, kernel)
-    alpha = cv2.morphologyEx(alpha, cv2.MORPH_OPEN, kernel)
+        # Morphological closing bridges tiny internal gaps inside the artwork
+        close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        alpha = cv2.morphologyEx(alpha, cv2.MORPH_CLOSE, close_kernel)
     
-    # Find external contours
+    # Find external contours for distinct figures
     contours, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Filter out small noise artifacts based on area
-    filtered_contours = [cnt for cnt in contours if cv2.contourArea(cnt) >= min_area]
+    # Filter out small noise artifacts and thin box outlines based on contour area
+    filtered_contours = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area >= min_area:
+            # Check aspect ratio / extent to filter long thin lines
+            x, y, w, h = cv2.boundingRect(cnt)
+            aspect_ratio = float(w) / h if h > 0 else 0
+            # Ignore extremely thin lines (e.g. 1px full width lines)
+            if aspect_ratio < 20 and aspect_ratio > 0.05:
+                filtered_contours.append(cnt)
     
     return filtered_contours, img.shape
 
-def create_offset_contour(contours, offset_px: float, join_style: int = 1, smooth: bool = True, fill_holes: bool = True):
+def create_offset_contour(contours, offset_px: float, join_style: int = 1, smooth: bool = True, fill_holes: bool = True, separate_objects: bool = True):
     """
-    Creates an offset contour using Shapely with unary_union, hole filling, and smooth rounding.
-    join_style: 1 for round, 2 for miter, 3 for bevel (square)
+    Creates offset contours for each separate picture in the image.
+    If separate_objects=True, offsets each picture independently so outlines stay separated per figure.
     """
     from shapely.ops import unary_union
 
@@ -64,29 +80,36 @@ def create_offset_contour(contours, offset_px: float, join_style: int = 1, smoot
                     poly = poly.buffer(0)
                 if poly.is_valid and not poly.is_empty:
                     if fill_holes:
-                        # Remove internal holes to create a solid sticker backing
+                        # Remove internal holes to create a solid backing for each picture
                         poly = Polygon(poly.exterior.coords)
                     polygons.append(poly)
     
     if not polygons:
         return Polygon()
 
-    # Seamlessly merge all polygons into a unified shape
-    merged = unary_union(polygons)
-    
-    # Apply buffer offset
-    if offset_px > 0:
-        offset_poly = merged.buffer(offset_px, join_style=join_style, cap_style=1)
-    else:
-        offset_poly = merged
-    
-    # Apply curve smoothing for organic, professional cutlines
-    if smooth and offset_poly and not offset_poly.is_empty:
-        # Simplify slightly then round out jagged corners
-        offset_poly = offset_poly.simplify(1.5, preserve_topology=True)
-        offset_poly = offset_poly.buffer(2.0, join_style=1).buffer(-2.0, join_style=1)
+    offset_polys = []
+    for p in polygons:
+        if offset_px > 0:
+            op = p.buffer(offset_px, join_style=join_style, cap_style=1)
+        else:
+            op = p
         
-    return offset_poly
+        if smooth and op and not op.is_empty:
+            op = op.simplify(1.5, preserve_topology=True)
+            op = op.buffer(2.0, join_style=1).buffer(-2.0, join_style=1)
+            
+        if op and not op.is_empty:
+            offset_polys.append(op)
+            
+    if not offset_polys:
+        return Polygon()
+        
+    if separate_objects:
+        # Keep each picture's offset contour distinct (MultiPolygon)
+        return MultiPolygon(offset_polys) if len(offset_polys) > 1 else offset_polys[0]
+    else:
+        # Merge overlapping offset contours into a single unified shape
+        return unary_union(offset_polys)
 
 def polygon_to_svg_path(poly, image_height: int):
     """Converts a Shapely polygon/multipolygon to SVG path data string."""
