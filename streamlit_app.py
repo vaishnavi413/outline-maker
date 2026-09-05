@@ -148,17 +148,28 @@ st.markdown("""
 
 # Sidebar - Controls Setup
 st.sidebar.markdown('<div class="sidebar-header">🎨 Outline Controls</div>', unsafe_allow_html=True)
-offset_mm = st.sidebar.slider("White border offset (mm)", 0.0, 20.0, 5.0, step=0.5)
-thickness_px = st.sidebar.slider("Outline thickness (px)", 1, 10, 2)
+offset_mm = st.sidebar.slider("White border offset (mm)", 0.0, 30.0, 5.0, step=0.5)
+thickness_px = st.sidebar.slider("Outline thickness (px)", 1, 15, 2)
 corner_type = st.sidebar.selectbox("Corner join style", ["Round", "Square", "Miter"])
-smooth = st.sidebar.checkbox("Smooth contour (spline simplify)", True)
+smooth = st.sidebar.checkbox("Smooth contour (organic curves)", True)
+fill_holes = st.sidebar.checkbox("Fill internal holes (solid sticker backing)", True)
+min_area = st.sidebar.slider("Filter tiny speckles / noise (min px²)", 0, 500, 50, step=10)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown('<div class="sidebar-header">🎨 Style & Colors</div>', unsafe_allow_html=True)
+fill_hex = st.sidebar.color_picker("Sticker backing fill color", "#FFFFFF")
+stroke_hex = st.sidebar.color_picker("Cut line stroke color", "#000000")
+
+def hex_to_rgba(hex_str, alpha=255):
+    h = hex_str.lstrip('#')
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4)) + (alpha,)
 
 st.sidebar.markdown("---")
 st.sidebar.info(
     "💡 **Tips:**\n\n"
-    "* **Round** corners give standard smooth sticker paths.\n"
-    "* **Square** yields blockier polygonal borders.\n"
-    "* Drag sliders to watch the preview update instantly."
+    "* **Fill internal holes**: Turn ON for a solid sticker backing. Turn OFF to cut inner gaps.\n"
+    "* **Filter speckles**: Increase if stray pixels or background boxes create unwanted cut lines.\n"
+    "* **Round**: Creates smooth organic contours."
 )
 
 # File Uploader
@@ -173,8 +184,8 @@ if uploaded:
     # Remove background using cached function
     bg_removed = get_cached_bg_removed(image_bytes)
     
-    # Extract contours
-    contours, shape = extract_contours(bg_removed)
+    # Extract contours with noise filter
+    contours, shape = extract_contours(bg_removed, min_area=float(min_area))
     img_h, img_w = shape[0], shape[1]
 
     # Convert mm to pixels (300 DPI layout calculations)
@@ -183,10 +194,14 @@ if uploaded:
     join_style = join_style_map[corner_type]
 
     # Calculate offset contour path
-    offset_contour = create_offset_contour(contours, offset_px, join_style, smooth)
+    offset_contour = create_offset_contour(contours, offset_px, join_style=join_style, smooth=smooth, fill_holes=fill_holes)
+
+    # Convert hex colors to RGBA
+    fill_rgba = hex_to_rgba(fill_hex, 255)
+    stroke_rgba = hex_to_rgba(stroke_hex, 255)
 
     # Generate print outputs (PNG, SVG, DXF, PDF)
-    exports = generate_exports(bg_removed, offset_contour, thickness_px, img_w, img_h)
+    exports = generate_exports(bg_removed, offset_contour, thickness_px, img_w, img_h, fill_color=fill_rgba, stroke_color=stroke_rgba)
 
     # Visual Comparison columns
     col1, col2 = st.columns(2)

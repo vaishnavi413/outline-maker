@@ -16,63 +16,75 @@ def remove_bg(image_bytes: bytes) -> bytes:
     result = remove(image_bytes)
     return result
 
-def extract_contours(image_bytes: bytes) -> list:
-    """Extracts base contours from an image with transparency."""
+def extract_contours(image_bytes: bytes, min_area: float = 50.0) -> tuple:
+    """Extracts base contours from an image with transparency and filters small noise artifacts."""
     # Read image
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
     
-    # If no alpha channel, return empty or handle differently
-    if img.shape[2] != 4:
-        # Convert to grayscale and threshold
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    if img is None:
+        raise ValueError("Invalid image file provided.")
+
+    # If no alpha channel, return empty or handle threshold
+    if len(img.shape) < 3 or img.shape[2] != 4:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) >= 3 else img
         _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
         alpha = thresh
     else:
         alpha = img[:, :, 3]
-        # Threshold alpha > 0 to create strict object mask
         _, alpha = cv2.threshold(alpha, 0, 255, cv2.THRESH_BINARY)
         
-    # Apply morphological closing and opening to clean the mask, removing noise and small artifacts
+    # Apply morphological closing and opening to clean mask
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     alpha = cv2.morphologyEx(alpha, cv2.MORPH_CLOSE, kernel)
     alpha = cv2.morphologyEx(alpha, cv2.MORPH_OPEN, kernel)
     
-    # Find contours
+    # Find external contours
     contours, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    return contours, img.shape
+    
+    # Filter out small noise artifacts based on area
+    filtered_contours = [cnt for cnt in contours if cv2.contourArea(cnt) >= min_area]
+    
+    return filtered_contours, img.shape
 
-def create_offset_contour(contours, offset_px: float, join_style: int, smooth: bool = False):
+def create_offset_contour(contours, offset_px: float, join_style: int = 1, smooth: bool = True, fill_holes: bool = True):
     """
-    Creates an offset contour using shapely.
+    Creates an offset contour using Shapely with unary_union, hole filling, and smooth rounding.
     join_style: 1 for round, 2 for miter, 3 for bevel (square)
     """
+    from shapely.ops import unary_union
+
     polygons = []
     for cnt in contours:
         if len(cnt) >= 3:
-            # Squeeze to get standard points (N, 2)
             pts = cnt.squeeze()
-            if len(pts.shape) == 2:
+            if len(pts.shape) == 2 and len(pts) >= 3:
                 poly = Polygon(pts)
-                if poly.is_valid:
+                if not poly.is_valid:
+                    poly = poly.buffer(0)
+                if poly.is_valid and not poly.is_empty:
+                    if fill_holes:
+                        # Remove internal holes to create a solid sticker backing
+                        poly = Polygon(poly.exterior.coords)
                     polygons.append(poly)
     
     if not polygons:
-        return []
+        return Polygon()
 
-    # Merge polygons if needed, but here we can just offset all
-    merged = MultiPolygon(polygons) if len(polygons) > 1 else polygons[0]
+    # Seamlessly merge all polygons into a unified shape
+    merged = unary_union(polygons)
     
-    # Offset
-    # Shapely join_style: 1=round, 2=mitre, 3=bevel
+    # Apply buffer offset
     if offset_px > 0:
-        offset_poly = merged.buffer(offset_px, join_style=join_style)
+        offset_poly = merged.buffer(offset_px, join_style=join_style, cap_style=1)
     else:
         offset_poly = merged
     
-    # Smooth if required (simple simplification)
-    if smooth and isinstance(offset_poly, (Polygon, MultiPolygon)):
-        offset_poly = offset_poly.simplify(2.0, preserve_topology=True)
+    # Apply curve smoothing for organic, professional cutlines
+    if smooth and offset_poly and not offset_poly.is_empty:
+        # Simplify slightly then round out jagged corners
+        offset_poly = offset_poly.simplify(1.5, preserve_topology=True)
+        offset_poly = offset_poly.buffer(2.0, join_style=1).buffer(-2.0, join_style=1)
         
     return offset_poly
 
@@ -84,19 +96,19 @@ def polygon_to_svg_path(poly, image_height: int):
         coords = list(p.exterior.coords)
         if not coords:
             return ""
-        path = f"M {coords[0][0]} {coords[0][1]} "
+        path = f"M {coords[0][0]:.2f} {coords[0][1]:.2f} "
         for x, y in coords[1:]:
-            path += f"L {x} {y} "
+            path += f"L {x:.2f} {y:.2f} "
         path += "Z "
         
-        # Handle holes
+        # Handle holes if any exist
         for interior in p.interiors:
             coords = list(interior.coords)
             if not coords:
                 continue
-            path += f"M {coords[0][0]} {coords[0][1]} "
+            path += f"M {coords[0][0]:.2f} {coords[0][1]:.2f} "
             for x, y in coords[1:]:
-                path += f"L {x} {y} "
+                path += f"L {x:.2f} {y:.2f} "
             path += "Z "
         return path
 
@@ -106,11 +118,11 @@ def polygon_to_svg_path(poly, image_height: int):
         return extract_path(poly)
     return ""
 
-def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, height: int):
-    """Generates the different export formats with boundary padding to prevent outline clipping."""
+def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, height: int, fill_color=(255, 255, 255, 255), stroke_color=(0, 0, 0, 255)):
+    """Generates print-ready export formats with dynamic canvas padding to eliminate border clipping."""
     from shapely.affinity import translate
     
-    # 1. Calculate dynamic padding based on polygon bounds to prevent edge clipping
+    # Calculate dynamic padding based on polygon bounds to prevent edge clipping
     pad_left = 0
     pad_right = 0
     pad_top = 0
@@ -118,10 +130,10 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
     
     if poly and not poly.is_empty:
         minx, miny, maxx, maxy = poly.bounds
-        pad_left = int(max(0, -minx) + thickness / 2 + 5)
-        pad_right = int(max(0, maxx - width) + thickness / 2 + 5)
-        pad_top = int(max(0, -miny) + thickness / 2 + 5)
-        pad_bottom = int(max(0, maxy - height) + thickness / 2 + 5)
+        pad_left = int(max(0, -minx) + thickness / 2 + 10)
+        pad_right = int(max(0, maxx - width) + thickness / 2 + 10)
+        pad_top = int(max(0, -miny) + thickness / 2 + 10)
+        pad_bottom = int(max(0, maxy - height) + thickness / 2 + 10)
         
     new_width = width + pad_left + pad_right
     new_height = height + pad_top + pad_bottom
@@ -135,10 +147,14 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
     # Create padded BGRA canvas for the sticker background
     out_cv = np.zeros((new_height, new_width, 4), dtype=np.uint8)
     
+    # Format colors for OpenCV (BGRA)
+    fill_bgra = (fill_color[2], fill_color[1], fill_color[0], fill_color[3])
+    stroke_bgra = (stroke_color[2], stroke_color[1], stroke_color[0], stroke_color[3])
+
     def draw_filled_poly(p, cv2_img):
         if not p.is_empty:
             coords = np.array(p.exterior.coords, dtype=np.int32)
-            cv2.fillPoly(cv2_img, [coords], (255, 255, 255, 255))
+            cv2.fillPoly(cv2_img, [coords], fill_bgra)
             for interior in p.interiors:
                 coords = np.array(interior.coords, dtype=np.int32)
                 cv2.fillPoly(cv2_img, [coords], (0, 0, 0, 0))
@@ -146,10 +162,10 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
     def draw_outline_poly(p, cv2_img):
         if not p.is_empty:
             coords = np.array(p.exterior.coords, dtype=np.int32)
-            cv2.polylines(cv2_img, [coords], True, (0, 0, 0, 255), int(max(1, thickness)), lineType=cv2.LINE_AA)
+            cv2.polylines(cv2_img, [coords], True, stroke_bgra, int(max(1, thickness)), lineType=cv2.LINE_AA)
             for interior in p.interiors:
                 coords = np.array(interior.coords, dtype=np.int32)
-                cv2.polylines(cv2_img, [coords], True, (0, 0, 0, 255), int(max(1, thickness)), lineType=cv2.LINE_AA)
+                cv2.polylines(cv2_img, [coords], True, stroke_bgra, int(max(1, thickness)), lineType=cv2.LINE_AA)
 
     if isinstance(poly, MultiPolygon):
         for p in poly.geoms:
@@ -160,7 +176,7 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
         draw_filled_poly(poly, out_cv)
         draw_outline_poly(poly, out_cv)
         
-    # Convert drawn background to PIL and composite original image on top (centered by padding offset)
+    # Convert drawn background to PIL and composite original image on top
     bg_img = Image.fromarray(cv2.cvtColor(out_cv, cv2.COLOR_BGRA2RGBA))
     bg_img.paste(img, (pad_left, pad_top), img)
     
@@ -170,9 +186,10 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
     png_bytes = buffer.getvalue()
 
     # 2. SVG (just the cut line on padded viewbox)
+    stroke_hex = f"#{stroke_color[0]:02x}{stroke_color[1]:02x}{stroke_color[2]:02x}"
     svg_path = polygon_to_svg_path(poly, new_height)
     svg_content = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {new_width} {new_height}" width="{new_width}" height="{new_height}">
-    <path d="{svg_path}" fill="none" stroke="red" stroke-width="{thickness}"/>
+    <path d="{svg_path}" fill="none" stroke="{stroke_hex}" stroke-width="{thickness}"/>
 </svg>'''
 
     # 3. DXF
@@ -181,7 +198,7 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
     def add_poly_to_dxf(p):
         if not p.is_empty:
             coords = list(p.exterior.coords)
-            msp.add_lwpolyline(coords, close=True, dxfattribs={'color': 1}) # 1 is red
+            msp.add_lwpolyline(coords, close=True, dxfattribs={'color': 1})
             for interior in p.interiors:
                 coords = list(interior.coords)
                 msp.add_lwpolyline(coords, close=True, dxfattribs={'color': 1})
@@ -200,7 +217,6 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
     pdf_buffer = io.BytesIO()
     c = pdf_canvas.Canvas(pdf_buffer, pagesize=(new_width, new_height))
     
-    # Save the transparent PNG temporarily for reportlab
     import tempfile
     import os
     tmp_path = None
@@ -208,7 +224,6 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             img.save(tmp.name)
             tmp_path = tmp.name
-        # ReportLab draws from bottom-left, which aligns with (pad_left, pad_bottom)
         c.drawImage(tmp_path, pad_left, pad_bottom, width, height, mask='auto')
     finally:
         if tmp_path and os.path.exists(tmp_path):
@@ -217,7 +232,7 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
             except Exception:
                 pass
     
-    c.setStrokeColorRGB(1, 0, 0)
+    c.setStrokeColorRGB(stroke_color[0]/255.0, stroke_color[1]/255.0, stroke_color[2]/255.0)
     c.setLineWidth(thickness)
     
     def draw_poly_on_pdf(p):
@@ -225,7 +240,6 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
             path = c.beginPath()
             coords = list(p.exterior.coords)
             if coords:
-                # Invert Y axis for ReportLab (origin is bottom-left)
                 path.moveTo(coords[0][0], new_height - coords[0][1])
                 for x, y in coords[1:]:
                     path.lineTo(x, new_height - y)
