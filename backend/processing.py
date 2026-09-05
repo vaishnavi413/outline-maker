@@ -107,12 +107,33 @@ def polygon_to_svg_path(poly, image_height: int):
     return ""
 
 def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, height: int):
-    """Generates the different export formats."""
-    # 1. Transparent PNG with outline (Sticker effect)
+    """Generates the different export formats with boundary padding to prevent outline clipping."""
+    from shapely.affinity import translate
+    
+    # 1. Calculate dynamic padding based on polygon bounds to prevent edge clipping
+    pad_left = 0
+    pad_right = 0
+    pad_top = 0
+    pad_bottom = 0
+    
+    if poly and not poly.is_empty:
+        minx, miny, maxx, maxy = poly.bounds
+        pad_left = int(max(0, -minx) + thickness / 2 + 5)
+        pad_right = int(max(0, maxx - width) + thickness / 2 + 5)
+        pad_top = int(max(0, -miny) + thickness / 2 + 5)
+        pad_bottom = int(max(0, maxy - height) + thickness / 2 + 5)
+        
+    new_width = width + pad_left + pad_right
+    new_height = height + pad_top + pad_bottom
+    
+    # Translate polygon to padded coordinate space
+    if poly and not poly.is_empty:
+        poly = translate(poly, xoff=pad_left, yoff=pad_top)
+
     img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
     
-    # Create empty BGRA image for the sticker background
-    out_cv = np.zeros((height, width, 4), dtype=np.uint8)
+    # Create padded BGRA canvas for the sticker background
+    out_cv = np.zeros((new_height, new_width, 4), dtype=np.uint8)
     
     def draw_filled_poly(p, cv2_img):
         if not p.is_empty:
@@ -139,18 +160,18 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
         draw_filled_poly(poly, out_cv)
         draw_outline_poly(poly, out_cv)
         
-    # Convert drawn background to PIL and composite original image on top
+    # Convert drawn background to PIL and composite original image on top (centered by padding offset)
     bg_img = Image.fromarray(cv2.cvtColor(out_cv, cv2.COLOR_BGRA2RGBA))
-    bg_img.paste(img, (0, 0), img)
+    bg_img.paste(img, (pad_left, pad_top), img)
     
     buffer = io.BytesIO()
     # Print-ready 300 DPI output
     bg_img.save(buffer, format="PNG", dpi=(300, 300))
     png_bytes = buffer.getvalue()
 
-    # 2. SVG (just the cut line)
-    svg_path = polygon_to_svg_path(poly, height)
-    svg_content = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">
+    # 2. SVG (just the cut line on padded viewbox)
+    svg_path = polygon_to_svg_path(poly, new_height)
+    svg_content = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {new_width} {new_height}" width="{new_width}" height="{new_height}">
     <path d="{svg_path}" fill="none" stroke="red" stroke-width="{thickness}"/>
 </svg>'''
 
@@ -160,7 +181,6 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
     def add_poly_to_dxf(p):
         if not p.is_empty:
             coords = list(p.exterior.coords)
-            # DXF Y is usually bottom-up, might need flipping if strict, but standard works
             msp.add_lwpolyline(coords, close=True, dxfattribs={'color': 1}) # 1 is red
             for interior in p.interiors:
                 coords = list(interior.coords)
@@ -176,12 +196,11 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
     doc.write(dxf_io)
     dxf_content = dxf_io.getvalue()
     
-    # 4. PDF (image + outline)
+    # 4. PDF (image + outline on padded page size)
     pdf_buffer = io.BytesIO()
-    # Let's just create a PDF with the image and drawing on top
-    c = pdf_canvas.Canvas(pdf_buffer, pagesize=(width, height))
+    c = pdf_canvas.Canvas(pdf_buffer, pagesize=(new_width, new_height))
     
-    # Need to save the transparent PNG temporarily for reportlab
+    # Save the transparent PNG temporarily for reportlab
     import tempfile
     import os
     tmp_path = None
@@ -189,8 +208,8 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             img.save(tmp.name)
             tmp_path = tmp.name
-        # reportlab draws from bottom-left
-        c.drawImage(tmp_path, 0, 0, width, height, mask='auto')
+        # ReportLab draws from bottom-left, which aligns with (pad_left, pad_bottom)
+        c.drawImage(tmp_path, pad_left, pad_bottom, width, height, mask='auto')
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -206,10 +225,10 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
             path = c.beginPath()
             coords = list(p.exterior.coords)
             if coords:
-                # Need to invert Y axis for reportlab (origin is bottom-left)
-                path.moveTo(coords[0][0], height - coords[0][1])
+                # Invert Y axis for ReportLab (origin is bottom-left)
+                path.moveTo(coords[0][0], new_height - coords[0][1])
                 for x, y in coords[1:]:
-                    path.lineTo(x, height - y)
+                    path.lineTo(x, new_height - y)
                 path.close()
                 c.drawPath(path, stroke=1, fill=0)
             
@@ -217,9 +236,9 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
                 path = c.beginPath()
                 coords = list(interior.coords)
                 if coords:
-                    path.moveTo(coords[0][0], height - coords[0][1])
+                    path.moveTo(coords[0][0], new_height - coords[0][1])
                     for x, y in coords[1:]:
-                        path.lineTo(x, height - y)
+                        path.lineTo(x, new_height - y)
                     path.close()
                     c.drawPath(path, stroke=1, fill=0)
                     
