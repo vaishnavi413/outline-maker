@@ -16,10 +16,10 @@ def remove_bg(image_bytes: bytes) -> bytes:
     result = remove(image_bytes)
     return result
 
-def extract_contours(image_bytes: bytes, min_area: float = 200.0, clean_lines: bool = True) -> tuple:
+def extract_contours(image_bytes: bytes, min_area: float = 200.0, clean_lines: bool = True, disconnect_dist: int = 5) -> tuple:
     """
     Extracts base contours from an image (PNG or JPG).
-    Cleans thin guide lines, registration boxes, and small noise artifacts.
+    Cleans thin guide lines, registration boxes, and severs thin connecting bridges between pictures.
     """
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
@@ -36,31 +36,45 @@ def extract_contours(image_bytes: bytes, min_area: float = 200.0, clean_lines: b
         alpha = img[:, :, 3]
         _, alpha = cv2.threshold(alpha, 10, 255, cv2.THRESH_BINARY)
 
-    # Clean thin guide lines (e.g. pink lines, registration boxes) using morphological operations
+    # 1. Morphological opening to erase thin 1-3px standalone lines & registration boxes
     if clean_lines:
-        # Morphological opening removes thin lines (thickness <= 3px)
         line_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         alpha = cv2.morphologyEx(alpha, cv2.MORPH_OPEN, line_kernel)
-        
-        # Morphological closing bridges tiny internal gaps inside the artwork
-        close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        alpha = cv2.morphologyEx(alpha, cv2.MORPH_CLOSE, close_kernel)
+
+    # 2. Bridge-Breaking: Erode to sever thin connecting lines/touching borders between pictures
+    if disconnect_dist > 0:
+        kernel_disc = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (disconnect_dist, disconnect_dist))
+        eroded = cv2.erode(alpha, kernel_disc, iterations=1)
+    else:
+        eroded = alpha
+
+    # Find external contours of separated components
+    raw_contours, _ = cv2.findContours(eroded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Find external contours for distinct figures
-    contours, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Filter out small noise artifacts and thin box outlines based on contour area
     filtered_contours = []
-    for cnt in contours:
+    h, w = alpha.shape[:2]
+
+    for cnt in raw_contours:
         area = cv2.contourArea(cnt)
         if area >= min_area:
-            # Check aspect ratio / extent to filter long thin lines
-            x, y, w, h = cv2.boundingRect(cnt)
-            aspect_ratio = float(w) / h if h > 0 else 0
-            # Ignore extremely thin lines (e.g. 1px full width lines)
+            bx, by, bw, bh = cv2.boundingRect(cnt)
+            aspect_ratio = float(bw) / bh if bh > 0 else 0
             if aspect_ratio < 20 and aspect_ratio > 0.05:
-                filtered_contours.append(cnt)
-    
+                # Create isolated mask for this component
+                comp_mask = np.zeros((h, w), dtype=np.uint8)
+                cv2.drawContours(comp_mask, [cnt], -1, 255, -1)
+                
+                # Dilate component back to restore full boundary
+                if disconnect_dist > 0:
+                    comp_mask = cv2.dilate(comp_mask, kernel_disc, iterations=1)
+                    comp_mask = cv2.bitwise_and(comp_mask, alpha)
+                
+                # Find exact boundary contour of restored component
+                c_list, _ = cv2.findContours(comp_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for c in c_list:
+                    if cv2.contourArea(c) >= min_area:
+                        filtered_contours.append(c)
+
     return filtered_contours, img.shape
 
 def create_offset_contour(contours, offset_px: float, join_style: int = 1, smooth: bool = True, fill_holes: bool = True, separate_objects: bool = True):

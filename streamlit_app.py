@@ -170,6 +170,7 @@ bg_mode = st.sidebar.radio(
 )
 separate_objects = st.sidebar.checkbox("Separate Outlines for Each Picture", True)
 clean_lines = st.sidebar.checkbox("Clean sheet guide lines & boxes", True)
+disconnect_dist = st.sidebar.slider("Disconnect nearby pictures (Bridge Breaker px)", 0, 20, 5, step=1)
 
 st.sidebar.markdown('---')
 st.sidebar.markdown('<div class="sidebar-header">🎨 Outline Controls</div>', unsafe_allow_html=True)
@@ -192,9 +193,9 @@ def hex_to_rgba(hex_str, alpha=255):
 st.sidebar.markdown("---")
 st.sidebar.info(
     "💡 **Multi-Picture JPG Tips:**\n\n"
+    "* **Disconnect nearby pictures**: Severs thin pink lines and touching edges between separate pictures.\n"
     "* **Separate Outlines for Each Picture**: Generates an independent outline around EVERY picture on the sheet!\n"
-    "* **White Background Threshold**: Instant background removal for JPG sheets with a white background.\n"
-    "* **Clean guide lines**: Cleans pink guide lines and green registration boxes."
+    "* **White Background Threshold**: Instant background removal for JPG sheets with a white background."
 )
 
 # File Uploader
@@ -212,8 +213,13 @@ if uploaded:
     else:
         bg_removed = get_cached_bg_removed(image_bytes)
     
-    # Extract contours with noise and line filters
-    contours, shape = extract_contours(bg_removed, min_area=float(min_area), clean_lines=clean_lines)
+    # Extract contours with noise, line, and bridge-breaker filters
+    contours, shape = extract_contours(
+        bg_removed, 
+        min_area=float(min_area), 
+        clean_lines=clean_lines,
+        disconnect_dist=int(disconnect_dist)
+    )
     img_h, img_w = shape[0], shape[1]
 
     # Convert mm to pixels (300 DPI layout calculations)
