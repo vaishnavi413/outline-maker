@@ -17,6 +17,8 @@ st.set_page_config(
 try:
     import threading, time, tempfile, importlib
     import io
+    import numpy as np
+    import cv2
     import backend.processing
     importlib.reload(backend.processing)
     from backend.processing import remove_bg, extract_contours, create_offset_contour, generate_exports
