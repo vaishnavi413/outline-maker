@@ -15,8 +15,10 @@ st.set_page_config(
 )
 
 try:
-    import threading, time, tempfile
+    import threading, time, tempfile, importlib
     import io
+    import backend.processing
+    importlib.reload(backend.processing)
     from backend.processing import remove_bg, extract_contours, create_offset_contour, generate_exports
 except Exception as e:
     st.error("Failed to start the application due to an import error. Please check your dependencies.")
