@@ -21,7 +21,13 @@ try:
     import cv2
     import backend.processing
     importlib.reload(backend.processing)
-    from backend.processing import remove_bg, extract_contours, create_offset_contour, generate_exports
+    from backend.processing import (
+        remove_bg, 
+        extract_contours, 
+        create_offset_contour, 
+        generate_exports,
+        extract_individual_sticker_exports
+    )
 except Exception as e:
     st.error("Failed to start the application due to an import error. Please check your dependencies.")
     st.exception(e)
@@ -255,10 +261,12 @@ if uploaded:
         st.subheader("✨ Sticker Sheet Preview (Separate Outlines)")
         st.image(exports["png"], use_container_width=True)
 
-    st.markdown("### 💾 Download Print-Ready Files (300 DPI)")
+    st.markdown("### 💾 Download Full Sheet Print-Ready Files (300 DPI)")
     
-    # Download Button Layout Grid
-    dl_col1, dl_col2, dl_col3, dl_col4 = st.columns(4)
+    # Global Sheet Download Button Layout Grid (2 rows x 3 cols)
+    g_row1_col1, g_row1_col2, g_row1_col3 = st.columns(3)
+    g_row2_col1, g_row2_col2, g_row2_col3 = st.columns(3)
+
     mime_map = {
         "png": "image/png", 
         "svg": "image/svg+xml", 
@@ -266,37 +274,104 @@ if uploaded:
         "dxf": "application/dxf"
     }
 
-    with dl_col1:
+    with g_row1_col1:
         st.download_button(
-            label="Download PNG (Transparent)",
+            label="🖼️ Download Full Sticker PNG",
             data=exports["png"],
-            file_name="sticker_print.png",
-            mime=mime_map["png"]
+            file_name="sticker_full_sheet.png",
+            mime=mime_map["png"],
+            key="dl_full_sheet_png"
         )
 
-    with dl_col2:
+    with g_row1_col2:
         st.download_button(
-            label="Download SVG (Vector Cut)",
+            label="🔲 Download Border ONLY PNG",
+            data=exports["border_png"],
+            file_name="border_only_sheet.png",
+            mime=mime_map["png"],
+            key="dl_border_sheet_png"
+        )
+
+    with g_row1_col3:
+        st.download_button(
+            label="✂️ Download Cut Line ONLY PNG",
+            data=exports["cutline_png"],
+            file_name="cutline_only_sheet.png",
+            mime=mime_map["png"],
+            key="dl_cutline_sheet_png"
+        )
+
+    with g_row2_col1:
+        st.download_button(
+            label="📐 Download SVG Vector Cut",
             data=exports["svg"],
             file_name="sticker_cutline.svg",
-            mime=mime_map["svg"]
+            mime=mime_map["svg"],
+            key="dl_svg_sheet"
         )
 
-    with dl_col3:
+    with g_row2_col2:
         st.download_button(
-            label="Download PDF (DPI Aligned)",
+            label="📄 Download PDF (Print Aligned)",
             data=exports["pdf"],
             file_name="sticker_layout.pdf",
-            mime=mime_map["pdf"]
+            mime=mime_map["pdf"],
+            key="dl_pdf_sheet"
         )
 
-    with dl_col4:
+    with g_row2_col3:
         st.download_button(
-            label="Download DXF (CAD/Plotter)",
+            label="💻 Download DXF (Plotter/CAD)",
             data=exports["dxf"],
             file_name="sticker_dxf.dxf",
-            mime=mime_map["dxf"]
+            mime=mime_map["dxf"],
+            key="dl_dxf_sheet"
         )
+
+    # Individual Picture Exports (Separate Download Buttons per Picture)
+    ind_exports = extract_individual_sticker_exports(
+        bg_removed, 
+        offset_contour, 
+        thickness_px, 
+        fill_color=fill_rgba, 
+        stroke_color=stroke_rgba
+    )
+
+    if ind_exports:
+        st.markdown("---")
+        st.markdown(f"### ✂️ Separate Download Buttons per Picture ({len(ind_exports)} detected)")
+        st.caption("Download independent borders, sticker PNGs, or cut lines for each picture individually.")
+        
+        # Display in rows of 3 columns
+        for row_idx in range(0, len(ind_exports), 3):
+            row_items = ind_exports[row_idx:row_idx+3]
+            cols = st.columns(len(row_items))
+            for i, item in enumerate(row_items):
+                with cols[i]:
+                    st.markdown(f"#### 🖼️ Picture #{item['index']}")
+                    st.image(item["full_png"], caption=f"Picture #{item['index']} Preview", use_container_width=True)
+                    
+                    st.download_button(
+                        label=f"🔲 Download Border ONLY #{item['index']}",
+                        data=item["border_png"],
+                        file_name=f"picture_{item['index']}_border_only.png",
+                        mime=mime_map["png"],
+                        key=f"dl_border_ind_{item['index']}"
+                    )
+                    st.download_button(
+                        label=f"🖼️ Download Sticker #{item['index']} PNG",
+                        data=item["full_png"],
+                        file_name=f"picture_{item['index']}_sticker.png",
+                        mime=mime_map["png"],
+                        key=f"dl_full_ind_{item['index']}"
+                    )
+                    st.download_button(
+                        label=f"✂️ Download Cut Line #{item['index']} SVG",
+                        data=item["svg"],
+                        file_name=f"picture_{item['index']}_cutline.svg",
+                        mime=mime_map["svg"],
+                        key=f"dl_svg_ind_{item['index']}"
+                    )
 
     # Start temp folder cleanup
     start_cleanup_thread()

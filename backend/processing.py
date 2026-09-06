@@ -1,3 +1,4 @@
+from math import floor, ceil
 import cv2
 import numpy as np
 from rembg import remove
@@ -213,23 +214,41 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
         draw_filled_poly(poly, out_cv)
         draw_outline_poly(poly, out_cv)
         
-    # Convert drawn background to PIL and composite original image on top
+    # 1. Full Sticker PNG (Image + Background Fill + Stroke Line)
     bg_img = Image.fromarray(cv2.cvtColor(out_cv, cv2.COLOR_BGRA2RGBA))
-    bg_img.paste(img, (pad_left, pad_top), img)
+    sticker_img = bg_img.copy()
+    sticker_img.paste(img, (pad_left, pad_top), img)
     
-    buffer = io.BytesIO()
-    # Print-ready 300 DPI output
-    bg_img.save(buffer, format="PNG", dpi=(300, 300))
-    png_bytes = buffer.getvalue()
+    buf_full = io.BytesIO()
+    sticker_img.save(buf_full, format="PNG", dpi=(300, 300))
+    png_bytes = buf_full.getvalue()
 
-    # 2. SVG (just the cut line on padded viewbox)
+    # 2. Border Only PNG (Background Fill + Stroke Line, NO Image inside)
+    buf_border = io.BytesIO()
+    bg_img.save(buf_border, format="PNG", dpi=(300, 300))
+    border_png_bytes = buf_border.getvalue()
+
+    # 3. Cut Line Only PNG (Transparent Canvas + Stroke Line ONLY)
+    stroke_cv = np.zeros((new_height, new_width, 4), dtype=np.uint8)
+    if isinstance(poly, MultiPolygon):
+        for p in poly.geoms:
+            draw_outline_poly(p, stroke_cv)
+    elif isinstance(poly, Polygon):
+        draw_outline_poly(poly, stroke_cv)
+        
+    stroke_img = Image.fromarray(cv2.cvtColor(stroke_cv, cv2.COLOR_BGRA2RGBA))
+    buf_cut = io.BytesIO()
+    stroke_img.save(buf_cut, format="PNG", dpi=(300, 300))
+    cutline_png_bytes = buf_cut.getvalue()
+
+    # 4. SVG (just the cut line on padded viewbox)
     stroke_hex = f"#{stroke_color[0]:02x}{stroke_color[1]:02x}{stroke_color[2]:02x}"
     svg_path = polygon_to_svg_path(poly, new_height)
     svg_content = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {new_width} {new_height}" width="{new_width}" height="{new_height}">
     <path d="{svg_path}" fill="none" stroke="{stroke_hex}" stroke-width="{thickness}"/>
 </svg>'''
 
-    # 3. DXF
+    # 5. DXF
     doc = ezdxf.new()
     msp = doc.modelspace()
     def add_poly_to_dxf(p):
@@ -250,7 +269,7 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
     doc.write(dxf_io)
     dxf_content = dxf_io.getvalue()
     
-    # 4. PDF (image + outline on padded page size)
+    # 6. PDF (image + outline on padded page size)
     pdf_buffer = io.BytesIO()
     c = pdf_canvas.Canvas(pdf_buffer, pagesize=(new_width, new_height))
     
@@ -304,7 +323,102 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
 
     return {
         "png": png_bytes,
+        "border_png": border_png_bytes,
+        "cutline_png": cutline_png_bytes,
         "svg": svg_content.encode("utf-8"),
         "dxf": dxf_content.encode("utf-8"),
         "pdf": pdf_bytes
     }
+
+def extract_individual_sticker_exports(image_bytes: bytes, poly, thickness: float, fill_color=(255, 255, 255, 255), stroke_color=(0, 0, 0, 255)) -> list:
+    """Crops each distinct picture/polygon and returns individual sticker exports."""
+    from shapely.affinity import translate
+
+    geoms = list(poly.geoms) if isinstance(poly, MultiPolygon) else [poly] if isinstance(poly, Polygon) and not poly.is_empty else []
+    if not geoms:
+        return []
+
+    img_full = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    full_w, full_h = img_full.size
+
+    individual_list = []
+    
+    for idx, p in enumerate(geoms):
+        if p.is_empty:
+            continue
+            
+        minx, miny, maxx, maxy = p.bounds
+        pad = int(thickness / 2 + 10)
+        
+        # Bounding crop box for this picture
+        crop_minx = int(max(0, floor(minx) - pad))
+        crop_miny = int(max(0, floor(miny) - pad))
+        crop_maxx = int(min(full_w, ceil(maxx) + pad))
+        crop_maxy = int(min(full_h, ceil(maxy) + pad))
+        
+        crop_w = crop_maxx - crop_minx
+        crop_h = crop_maxy - crop_miny
+        
+        if crop_w <= 0 or crop_h <= 0:
+            continue
+            
+        # Crop original artwork for this picture
+        img_cropped = img_full.crop((crop_minx, crop_miny, crop_maxx, crop_maxy))
+        
+        # Translate polygon relative to crop origin
+        p_cropped = translate(p, xoff=-crop_minx, yoff=-crop_miny)
+        
+        # Draw background fill & stroke line on crop canvas
+        out_cv = np.zeros((crop_h, crop_w, 4), dtype=np.uint8)
+        stroke_cv = np.zeros((crop_h, crop_w, 4), dtype=np.uint8)
+        
+        fill_bgra = (fill_color[2], fill_color[1], fill_color[0], fill_color[3])
+        stroke_bgra = (stroke_color[2], stroke_color[1], stroke_color[0], stroke_color[3])
+
+        coords = np.array(p_cropped.exterior.coords, dtype=np.int32)
+        cv2.fillPoly(out_cv, [coords], fill_bgra)
+        cv2.polylines(out_cv, [coords], True, stroke_bgra, int(max(1, thickness)), lineType=cv2.LINE_AA)
+        cv2.polylines(stroke_cv, [coords], True, stroke_bgra, int(max(1, thickness)), lineType=cv2.LINE_AA)
+
+        for interior in p_cropped.interiors:
+            icoords = np.array(interior.coords, dtype=np.int32)
+            cv2.fillPoly(out_cv, [icoords], (0, 0, 0, 0))
+            cv2.polylines(out_cv, [icoords], True, stroke_bgra, int(max(1, thickness)), lineType=cv2.LINE_AA)
+            cv2.polylines(stroke_cv, [icoords], True, stroke_bgra, int(max(1, thickness)), lineType=cv2.LINE_AA)
+
+        # Full Sticker (Picture + Border)
+        bg_pil = Image.fromarray(cv2.cvtColor(out_cv, cv2.COLOR_BGRA2RGBA))
+        border_only_pil = bg_pil.copy()
+        
+        full_sticker_pil = bg_pil.copy()
+        full_sticker_pil.paste(img_cropped, (0, 0), img_cropped)
+        
+        # Cut Line Only
+        stroke_pil = Image.fromarray(cv2.cvtColor(stroke_cv, cv2.COLOR_BGRA2RGBA))
+
+        # Save bytes
+        b_full = io.BytesIO()
+        full_sticker_pil.save(b_full, format="PNG", dpi=(300, 300))
+        
+        b_border = io.BytesIO()
+        border_only_pil.save(b_border, format="PNG", dpi=(300, 300))
+        
+        b_stroke = io.BytesIO()
+        stroke_pil.save(b_stroke, format="PNG", dpi=(300, 300))
+
+        # Individual SVG path
+        svg_p = polygon_to_svg_path(p_cropped, crop_h)
+        stroke_hex = f"#{stroke_color[0]:02x}{stroke_color[1]:02x}{stroke_color[2]:02x}"
+        svg_ind = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {crop_w} {crop_h}" width="{crop_w}" height="{crop_h}">
+    <path d="{svg_p}" fill="none" stroke="{stroke_hex}" stroke-width="{thickness}"/>
+</svg>'''
+
+        individual_list.append({
+            "index": idx + 1,
+            "full_png": b_full.getvalue(),
+            "border_png": b_border.getvalue(),
+            "cutline_png": b_stroke.getvalue(),
+            "svg": svg_ind.encode("utf-8")
+        })
+
+    return individual_list
