@@ -269,25 +269,48 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
     doc.write(dxf_io)
     dxf_content = dxf_io.getvalue()
     
-    # 6. PDF (image + outline on padded page size)
+    # 6. PDF Exports (A. Sticker Sheet PDF with Image, B. Outline ONLY PDF)
+    pdf_full_bytes = create_pdf_bytes(
+        poly, new_width, new_height, thickness, stroke_color,
+        image_pil=img, pad_left=pad_left, pad_bottom=pad_bottom, img_w=width, img_h=height
+    )
+    
+    pdf_outline_bytes = create_pdf_bytes(
+        poly, new_width, new_height, thickness, stroke_color,
+        image_pil=None
+    )
+
+    return {
+        "png": png_bytes,
+        "border_png": border_png_bytes,
+        "cutline_png": cutline_png_bytes,
+        "svg": svg_content.encode("utf-8"),
+        "dxf": dxf_content.encode("utf-8"),
+        "pdf": pdf_full_bytes,
+        "outline_pdf": pdf_outline_bytes
+    }
+
+def create_pdf_bytes(poly, canvas_w: int, canvas_h: int, thickness: float, stroke_color=(0, 0, 0, 255), image_pil=None, pad_left: int = 0, pad_bottom: int = 0, img_w: int = 0, img_h: int = 0) -> bytes:
+    """Helper to generate vector PDF exports with or without image overlay."""
     pdf_buffer = io.BytesIO()
-    c = pdf_canvas.Canvas(pdf_buffer, pagesize=(new_width, new_height))
+    c = pdf_canvas.Canvas(pdf_buffer, pagesize=(canvas_w, canvas_h))
     
-    import tempfile
-    import os
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-            img.save(tmp.name)
-            tmp_path = tmp.name
-        c.drawImage(tmp_path, pad_left, pad_bottom, width, height, mask='auto')
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
-    
+    if image_pil is not None:
+        import tempfile
+        import os
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                image_pil.save(tmp.name)
+                tmp_path = tmp.name
+            c.drawImage(tmp_path, pad_left, pad_bottom, img_w if img_w > 0 else canvas_w, img_h if img_h > 0 else canvas_h, mask='auto')
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+                    
     c.setStrokeColorRGB(stroke_color[0]/255.0, stroke_color[1]/255.0, stroke_color[2]/255.0)
     c.setLineWidth(thickness)
     
@@ -296,9 +319,9 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
             path = c.beginPath()
             coords = list(p.exterior.coords)
             if coords:
-                path.moveTo(coords[0][0], new_height - coords[0][1])
+                path.moveTo(coords[0][0], canvas_h - coords[0][1])
                 for x, y in coords[1:]:
-                    path.lineTo(x, new_height - y)
+                    path.lineTo(x, canvas_h - y)
                 path.close()
                 c.drawPath(path, stroke=1, fill=0)
             
@@ -306,9 +329,9 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
                 path = c.beginPath()
                 coords = list(interior.coords)
                 if coords:
-                    path.moveTo(coords[0][0], new_height - coords[0][1])
+                    path.moveTo(coords[0][0], canvas_h - coords[0][1])
                     for x, y in coords[1:]:
-                        path.lineTo(x, new_height - y)
+                        path.lineTo(x, canvas_h - y)
                     path.close()
                     c.drawPath(path, stroke=1, fill=0)
                     
@@ -319,16 +342,7 @@ def generate_exports(image_bytes: bytes, poly, thickness: float, width: int, hei
         draw_poly_on_pdf(poly)
         
     c.save()
-    pdf_bytes = pdf_buffer.getvalue()
-
-    return {
-        "png": png_bytes,
-        "border_png": border_png_bytes,
-        "cutline_png": cutline_png_bytes,
-        "svg": svg_content.encode("utf-8"),
-        "dxf": dxf_content.encode("utf-8"),
-        "pdf": pdf_bytes
-    }
+    return pdf_buffer.getvalue()
 
 def extract_individual_sticker_exports(image_bytes: bytes, poly, thickness: float, fill_color=(255, 255, 255, 255), stroke_color=(0, 0, 0, 255)) -> list:
     """Crops each distinct picture/polygon and returns individual sticker exports."""
@@ -406,6 +420,16 @@ def extract_individual_sticker_exports(image_bytes: bytes, poly, thickness: floa
         b_stroke = io.BytesIO()
         stroke_pil.save(b_stroke, format="PNG", dpi=(300, 300))
 
+        # PDF exports for individual picture (Outline ONLY PDF and Full Sticker PDF)
+        ind_pdf_outline = create_pdf_bytes(
+            p_cropped, crop_w, crop_h, thickness, stroke_color,
+            image_pil=None
+        )
+        ind_pdf_full = create_pdf_bytes(
+            p_cropped, crop_w, crop_h, thickness, stroke_color,
+            image_pil=img_cropped
+        )
+
         # Individual SVG path
         svg_p = polygon_to_svg_path(p_cropped, crop_h)
         stroke_hex = f"#{stroke_color[0]:02x}{stroke_color[1]:02x}{stroke_color[2]:02x}"
@@ -418,7 +442,9 @@ def extract_individual_sticker_exports(image_bytes: bytes, poly, thickness: floa
             "full_png": b_full.getvalue(),
             "border_png": b_border.getvalue(),
             "cutline_png": b_stroke.getvalue(),
-            "svg": svg_ind.encode("utf-8")
+            "svg": svg_ind.encode("utf-8"),
+            "pdf": ind_pdf_full,
+            "outline_pdf": ind_pdf_outline
         })
 
     return individual_list

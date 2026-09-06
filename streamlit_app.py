@@ -294,11 +294,11 @@ if uploaded:
 
     with g_row1_col3:
         st.download_button(
-            label="✂️ Download Cut Line ONLY PNG",
-            data=exports["cutline_png"],
-            file_name="cutline_only_sheet.png",
-            mime=mime_map["png"],
-            key="dl_cutline_sheet_png"
+            label="📄 Download Outline ONLY PDF",
+            data=exports["outline_pdf"],
+            file_name="outline_only_sheet.pdf",
+            mime=mime_map["pdf"],
+            key="dl_outline_pdf_sheet"
         )
 
     with g_row2_col1:
@@ -312,7 +312,7 @@ if uploaded:
 
     with g_row2_col2:
         st.download_button(
-            label="📄 Download PDF (Print Aligned)",
+            label="📄 Download Full Sticker PDF",
             data=exports["pdf"],
             file_name="sticker_layout.pdf",
             mime=mime_map["pdf"],
@@ -340,7 +340,7 @@ if uploaded:
     if ind_exports:
         st.markdown("---")
         st.markdown(f"### ✂️ Separate Download Buttons per Picture ({len(ind_exports)} detected)")
-        st.caption("Download independent borders, sticker PNGs, or cut lines for each picture individually.")
+        st.caption("Download independent outline PDFs, borders, sticker PNGs, or cut lines for each picture individually.")
         
         # Display in rows of 3 columns
         for row_idx in range(0, len(ind_exports), 3):
@@ -352,21 +352,28 @@ if uploaded:
                     st.image(item["full_png"], caption=f"Picture #{item['index']} Preview", use_container_width=True)
                     
                     st.download_button(
-                        label=f"🔲 Download Border ONLY #{item['index']}",
+                        label=f"📄 Download Outline ONLY PDF #{item['index']}",
+                        data=item["outline_pdf"],
+                        file_name=f"picture_{item['index']}_outline.pdf",
+                        mime=mime_map["pdf"],
+                        key=f"dl_outline_pdf_ind_{item['index']}"
+                    )
+                    st.download_button(
+                        label=f"🔲 Download Border ONLY PNG #{item['index']}",
                         data=item["border_png"],
                         file_name=f"picture_{item['index']}_border_only.png",
                         mime=mime_map["png"],
                         key=f"dl_border_ind_{item['index']}"
                     )
                     st.download_button(
-                        label=f"🖼️ Download Sticker #{item['index']} PNG",
+                        label=f"🖼️ Download Sticker PNG #{item['index']}",
                         data=item["full_png"],
                         file_name=f"picture_{item['index']}_sticker.png",
                         mime=mime_map["png"],
                         key=f"dl_full_ind_{item['index']}"
                     )
                     st.download_button(
-                        label=f"✂️ Download Cut Line #{item['index']} SVG",
+                        label=f"✂️ Download Cut Line SVG #{item['index']}",
                         data=item["svg"],
                         file_name=f"picture_{item['index']}_cutline.svg",
                         mime=mime_map["svg"],
